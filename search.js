@@ -87,15 +87,20 @@ router.get("/", async (req, res) => {
       // Add metadata if exists
       if (r.key) {
         let metaValue = r.value;
-        // Parse JSON objects
-        try {
-          const parsed = JSON.parse(r.value);
-          if (typeof parsed === "object") {
+
+        // Remove "[object Object]" if present
+        if (metaValue === "[object Object]") metaValue = "";
+
+        // Try parsing JSON only if it looks like JSON
+        if (typeof metaValue === "string" && (metaValue.startsWith("{") || metaValue.startsWith("["))) {
+          try {
+            const parsed = JSON.parse(metaValue);
             metaValue = JSON.stringify(parsed, null, 2);
+          } catch {
+            // leave as-is if not valid JSON
           }
-        } catch (err) {
-          metaValue = r.value;
         }
+
         filesMap.get(r.id).metadata.push({ key: r.key, value: metaValue });
       }
     });
@@ -108,3 +113,4 @@ router.get("/", async (req, res) => {
 });
 
 export default router;
+
