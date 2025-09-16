@@ -1,0 +1,23 @@
+body {
+  font-family: Arial, sans-serif;
+  padding: 20px;
+}
+h1 {
+  color: #2c3e50;
+}
+input {
+  width: 60%;
+  padding: 5px;
+}
+button {
+  padding: 5px 10px;
+}
+.results section {
+  border-bottom: 1px solid #ccc;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+}
+.results img {
+  width: 150px;
+  float: right;
+}
