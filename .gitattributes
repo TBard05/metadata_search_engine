@@ -1,0 +1,2 @@
+files/*.mp3 filter=lfs diff=lfs merge=lfs -text
+files/*.jpg filter=lfs diff=lfs merge=lfs -text
