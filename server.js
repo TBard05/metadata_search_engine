@@ -1,29 +1,29 @@
+import 'dotenv/config';
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
-import searchRoutes from "./routes/search.js";
+import searchRoutes from "./search.js"; 
 
-// --- Create Express app ---
 const app = express();
-
-// --- Set up __dirname for ES modules ---
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// --- Middleware ---
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "client"))); // Serve static files (images/audio/video)
 
-// --- Routes ---
+app.use(express.static(path.join(__dirname, "frontend")));
+
+const FILES_DIR = process.env.FILES_DIR || "files";
+app.use("/files", express.static(path.join(__dirname, FILES_DIR)));
+
 app.use("/api/search", searchRoutes);
 
-// --- Serve frontend index.html ---
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "client", "index.html"));
+  res.sendFile(path.join(__dirname, "frontend", "index.html"));
 });
 
-// --- Start server ---
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
+  console.log(`Serving files from: ${path.join(__dirname, FILES_DIR)}  at  /files`);
 });
+

@@ -1,55 +1,40 @@
 import fs from "fs/promises";
 import path from "path";
 import { PDFDocument } from "pdf-lib";
-import { query } from "../utils/db.js";
+import db from "./db.js";
 
 export async function processPdfFile(filePath) {
-    const filename = path.basename(filePath);
+  const filename = path.basename(filePath);
+  try {
+    const data = await fs.readFile(filePath);
+    const pdf = await PDFDocument.load(data);
 
-    try {
-        const dataBuffer = await fs.readFile(filePath);
-        const pdfDoc = await PDFDocument.load(dataBuffer);
+    const fields = ["Title","Author","Subject","Creator","Producer","CreationDate","ModificationDate"];
+    const info = Object.fromEntries(fields.map(f => [f, pdf[`get${f}`]?.call(pdf) || null]));
+    const meta = { numPages: pdf.getPageCount(), ...info };
 
-        // love me self simplicity
-        const metadataFields = [
-            "Title", "Author", "Subject", "Creator", "Producer", "CreationDate", "ModificationDate"
-        ];
+    await db.query(
+      `INSERT INTO files (filename, filepath, filetype)
+       VALUES (?, ?, 'pdf')
+       ON DUPLICATE KEY UPDATE filepath=VALUES(filepath), filetype='pdf'`,
+      [filename, filePath]
+    );
 
-        const info = Object.fromEntries(
-            metadataFields.map(field => [
-                field.charAt(0).toLowerCase() + field.slice(1),
-                pdfDoc[`get${field}`]() || null
-            ])
-        );
+    const [row] = await db.query(`SELECT id FROM files WHERE filename=?`, [filename]);
+    if (!row) throw new Error("Kunde inte hämta file_id");
+    const fileId = row.id;
 
-        const numPages = pdfDoc.getPageCount();
-
-        let previewText = "";
-        try {
-            const firstPage = pdfDoc.getPages()[0];
-            const textContent = await firstPage.getTextContent();
-            if (textContent.length > 0) {
-                previewText = textContent[0].str.substring(0, 1000);
-            }
-        } catch {
-        }
-
-        const commonMetadata = {
-            numPages,
-            info,
-            text: previewText
-        };
-
-        const jsonDescription = JSON.stringify(commonMetadata);
-
-        await query(`
-            INSERT INTO pdf_metadata (filename, description)
-            VALUES (?, ?)
-            ON DUPLICATE KEY UPDATE description = VALUES(description)
-        `, [filename, jsonDescription]);
-
-        console.log(`Processed and saved metadata for ${filename}`);
-    } catch (err) {
-        console.error(`Error processing ${filename}:`, err);
+    const pairs = Object.entries(meta).filter(([, v]) => v != null);
+    if (pairs.length) {
+      const sql = `INSERT INTO metadata (file_id, metadata_key, metadata_value)
+                   VALUES ${pairs.map(() => "(?, ?, ?)").join(",")}
+                   ON DUPLICATE KEY UPDATE metadata_value=VALUES(metadata_value)`;
+      const params = pairs.flatMap(([k, v]) => [fileId, k, String(v)]);
+      await db.query(sql, params);
     }
+
+    console.log(`[pdf] Saved ${filename}`);
+  } catch (err) {
+    console.error(`[pdf] Error ${filename}:`, err.message);
+  }
 }
