@@ -8,25 +8,23 @@ router.get("/", async (req, res) => {
   try {
     let { filename, key, value, operator, filetype, lat, lng, radius } = req.query;
 
-    const relevance = `
-      (CASE
-        WHEN f.filename LIKE ? THEN 2
-        WHEN m.metadata_value LIKE ? THEN 1
-        ELSE 0
-      END) AS relevance
-    `;
-
+    // Base query
     let query = `
       SELECT f.id, f.filename, f.filepath, f.filetype, f.upload_date,
-             m.metadata_key AS \`key\`, m.metadata_value AS value,
-             ${relevance}
+             m.metadata_key AS meta_key, m.metadata_value AS meta_value,
+             CASE
+               WHEN f.filename LIKE ? THEN 2
+               WHEN m.metadata_value LIKE ? THEN 1
+               ELSE 0
+             END AS relevance
       FROM files f
       LEFT JOIN metadata m ON f.id = m.file_id
       WHERE 1=1
     `;
-
+    
     const params = [`%${filename || ''}%`, `%${value || ''}%`];
 
+    // Filters
     if (filename) {
       query += " AND f.filename LIKE ?";
       params.push(`%${filename}%`);
@@ -69,8 +67,9 @@ router.get("/", async (req, res) => {
 
     const [rows] = await db.query(query, params);
 
-    // --- Organize metadata per file ---
+    // --- Deduplicate files and metadata ---
     const filesMap = new Map();
+
     rows.forEach(r => {
       if (!filesMap.has(r.id)) {
         filesMap.set(r.id, {
@@ -79,28 +78,34 @@ router.get("/", async (req, res) => {
           filepath: r.filepath,
           filetype: r.filetype,
           relevance: r.relevance,
-          metadata: [],
-          imageUrl: r.filetype === "image" ? `/files/${path.basename(r.filepath)}` : null
+          metadata: new Map(), // temporary Map to dedupe metadata
+          viewUrl: `/files/${path.basename(r.filepath)}`,
+          downloadUrl: `/download/${path.basename(r.filepath)}`
         });
       }
 
-      // Add metadata if exists
-      if (r.key) {
-        let metaValue = r.value;
-        // Parse JSON objects
-        try {
-          const parsed = JSON.parse(r.value);
-          if (typeof parsed === "object") {
-            metaValue = JSON.stringify(parsed, null, 2);
-          }
-        } catch (err) {
-          metaValue = r.value;
+      if (r.meta_key && r.meta_value) {
+        let metaValue = r.meta_value;
+
+        // Parse JSON if looks like JSON
+        if (typeof metaValue === "string" && (metaValue.startsWith("{") || metaValue.startsWith("["))) {
+          try {
+            metaValue = JSON.stringify(JSON.parse(metaValue), null, 2);
+          } catch {}
         }
-        filesMap.get(r.id).metadata.push({ key: r.key, value: metaValue });
+
+        filesMap.get(r.id).metadata.set(r.meta_key, metaValue);
       }
     });
 
-    res.json({ results: Array.from(filesMap.values()) });
+    // Convert metadata Map to array for JSON
+    const results = Array.from(filesMap.values()).map(f => ({
+      ...f,
+      metadata: Array.from(f.metadata, ([key, value]) => ({ key, value }))
+    }));
+
+    res.json({ results });
+
   } catch (err) {
     console.error("Search error:", err.message);
     res.status(500).json({ error: err.message });
@@ -108,3 +113,5 @@ router.get("/", async (req, res) => {
 });
 
 export default router;
+
+
