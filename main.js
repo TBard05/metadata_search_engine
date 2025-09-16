@@ -11,7 +11,7 @@ async function search() {
 
   let html = `<p>Found ${files.length} results for "${term}"</p>`;
   for (const f of files) {
-    // Try to parse metadata if it's a JSON string
+ 
     let metadata = f.metadata;
     try {
       if (typeof metadata === "string") {

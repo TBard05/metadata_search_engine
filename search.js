@@ -1,5 +1,5 @@
 import express from "express";
-import db from "../db.js";
+import db from "./db.js"; 
 import path from "path";
 
 const router = express.Router();
@@ -25,7 +25,7 @@ router.get("/", async (req, res) => {
       WHERE 1=1
     `;
 
-    const params = [`%${filename || ''}%`, `%${value || ''}%`];
+    const params = [`%${filename || ""}%`, `%${value || ""}%`];
 
     if (filename) {
       query += " AND f.filename LIKE ?";
@@ -67,9 +67,8 @@ router.get("/", async (req, res) => {
 
     query += " ORDER BY relevance DESC, f.upload_date DESC";
 
-    const [rows] = await db.query(query, params);
+    const rows = await db.query(query, params);
 
-    // --- Organize metadata per file ---
     const filesMap = new Map();
     rows.forEach(r => {
       if (!filesMap.has(r.id)) {
@@ -80,27 +79,18 @@ router.get("/", async (req, res) => {
           filetype: r.filetype,
           relevance: r.relevance,
           metadata: [],
-          imageUrl: r.filetype === "image" ? `/files/${path.basename(r.filepath)}` : null
+          imageUrl: r.filetype === "image" ? `/files/${path.basename(r.filepath) || r.filename}` : null
         });
       }
 
-      // Add metadata if exists
       if (r.key) {
         let metaValue = r.value;
-
-        // Remove "[object Object]" if present
         if (metaValue === "[object Object]") metaValue = "";
-
-        // Try parsing JSON only if it looks like JSON
         if (typeof metaValue === "string" && (metaValue.startsWith("{") || metaValue.startsWith("["))) {
           try {
-            const parsed = JSON.parse(metaValue);
-            metaValue = JSON.stringify(parsed, null, 2);
-          } catch {
-            // leave as-is if not valid JSON
-          }
+            metaValue = JSON.stringify(JSON.parse(metaValue), null, 2);
+          } catch {}
         }
-
         filesMap.get(r.id).metadata.push({ key: r.key, value: metaValue });
       }
     });
@@ -113,4 +103,3 @@ router.get("/", async (req, res) => {
 });
 
 export default router;
-

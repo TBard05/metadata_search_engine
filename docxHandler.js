@@ -1,60 +1,62 @@
-import fs from 'fs';
-import path from 'path';
-import PizZip from 'pizzip';
-import Docxtemplater from 'docxtemplater';
-import mammoth from 'mammoth';
-import { query } from '../utils/db.js';
+import fs from "fs";
+import path from "path";
+import PizZip from "pizzip";
+import mammoth from "mammoth";
+import db from "./db.js";
 
-async function extractMetadata(filePath) {
-    const content = fs.readFileSync(filePath, 'binary');
-    const zip = new PizZip(content);
-    
-    // detectiv Ventura, Ace Ventura
-    const coreXml = zip.files['docProps/core.xml'];
-    if (!coreXml) return {};
-
-    const xmlContent = coreXml.asText();
-    
-    const titleMatch = /<dc:title>(.*?)<\/dc:title>/.exec(xmlContent);
-    const creatorMatch = /<dc:creator>(.*?)<\/dc:creator>/.exec(xmlContent);
-
-    return {
-        Title: titleMatch ? titleMatch[1] : 'Ingen titel',
-        Creator: creatorMatch ? creatorMatch[1] : 'Okänd'
-    };
+function extractDocxCore(filePath) {
+  const content = fs.readFileSync(filePath, "binary");
+  const zip = new PizZip(content);
+  const coreXml = zip.files["docProps/core.xml"];
+  if (!coreXml) return {};
+  const xml = coreXml.asText();
+  const pick = (tag) => {
+    const m = new RegExp(`<${tag}>(.*?)</${tag}>`).exec(xml);
+    return m ? m[1] : null;
+  };
+  return {
+    Title: pick("dc:title") || "Ingen titel",
+    Creator: pick("dc:creator") || "Okänd"
+  };
 }
 
 export async function processDocxFile(filePath) {
-    const filename = path.basename(filePath);
+  const filename = path.basename(filePath);
+  try {
+    const { value: text } = await mammoth.extractRawText({ path: filePath });
+    const wordCount = (text || "").split(/\s+/).filter(Boolean).length;
+    const stat = fs.statSync(filePath);
 
-    try {
-        const textResult = await mammoth.extractRawText({ path: filePath });
-        const text = textResult.value;
-        const wordCount = text.split(/\s+/).filter(word => word.length > 0).length;
+    const meta = {
+      ...extractDocxCore(filePath),
+      WordCount: wordCount,
+      CreateDate: stat.birthtime?.toISOString?.() || null,
+      ModifyDate: stat.mtime?.toISOString?.() || null,
+      text
+    };
 
-        const docxMetadata = await extractMetadata(filePath);
+    await db.query(
+      `INSERT INTO files (filename, filepath, filetype)
+       VALUES (?, ?, 'document')
+       ON DUPLICATE KEY UPDATE filepath=VALUES(filepath), filetype='document'`,
+      [filename, filePath]
+    );
 
-        const fileStats = fs.statSync(filePath);
+    const [row] = await db.query(`SELECT id FROM files WHERE filename=?`, [filename]);
+    if (!row) throw new Error("Kunde inte hämta file_id");
+    const fileId = row.id;
 
-        const metadata = {
-            Title: docxMetadata.Title,
-            Creator: docxMetadata.Creator,
-            WordCount: wordCount,
-            CreateDate: fileStats.birthtime.toISOString(),
-            ModifyDate: fileStats.mtime.toISOString(),
-            text: text
-        };
-
-        const jsonDescription = JSON.stringify(metadata, null, 2);
-
-        await query(`
-            INSERT INTO docx_metadata (filename, description)
-            VALUES (?, ?)
-            ON DUPLICATE KEY UPDATE description = VALUES(description)
-        `, [filename, jsonDescription]);
-
-        console.log(`Successfully processed and saved metadata for ${filename}`);
-    } catch (err) {
-        console.error(`Error processing ${filename}:`, err);
+    const pairs = Object.entries(meta).filter(([, v]) => v != null);
+    if (pairs.length) {
+      const sql = `INSERT INTO metadata (file_id, metadata_key, metadata_value)
+                   VALUES ${pairs.map(() => "(?, ?, ?)").join(",")}
+                   ON DUPLICATE KEY UPDATE metadata_value=VALUES(metadata_value)`;
+      const params = pairs.flatMap(([k, v]) => [fileId, k, String(v)]);
+      await db.query(sql, params);
     }
+
+    console.log(`[docx] Saved ${filename}`);
+  } catch (err) {
+    console.error(`[docx] Error ${filename}:`, err.message);
+  }
 }

@@ -1,63 +1,57 @@
-import exifr from 'exifr';
-import fs from 'fs';
-import path from 'path';
-import { query } from '../utils/db.js';
-import { getLocationFromCoords } from '../utils/geocoding.js';
-import * as unzipper from 'unzipper';
+import exifr from "exifr";
+import fs from "fs";
+import path from "path";
+import db from "./db.js";
 
-export async function processImageFile(filePath) {
-    const filename = path.basename(filePath);
-    try {
-        const metadata = await exifr.parse(filePath);
-        let locationData = { city: null, country: null };
-        if (metadata && metadata.latitude && metadata.longitude) {
-            locationData = await getLocationFromCoords(metadata.latitude, metadata.longitude);
-        }
-        const filteredMetadata = {
-            make: metadata?.Make || null,
-            model: metadata?.Model || null,
-            dateTaken: metadata?.DateTimeOriginal ? new Date(metadata.DateTimeOriginal) : null,
-            location: `${locationData.city}, ${locationData.country}`.replace(/^,\s*|,\s*$/g, '')
-        };
-        const jsonDescription = JSON.stringify(filteredMetadata);
-        await query(`
-            INSERT INTO images_metadata (filename, description, city, country)
-            VALUES (?, ?, ?, ?)
-            ON DUPLICATE KEY UPDATE description = VALUES(description), city = VALUES(city), country = VALUES(country)
-        `, [filename, jsonDescription, locationData.city, locationData.country]);
-        console.log(`Successfully processed and saved metadata for ${filename}`);
-    } catch (err) {
-        console.error(`Error processing ${filename}:`, err);
-    }
+async function getLocationFromCoords(/* lat, lng */) {
+  return { city: null, country: null };
 }
 
-export async function processZipFile(uploadedFile, imagesDir, tempDir) {
-    const tempZipPath = uploadedFile.tempFilePath;
-    try {
-        if (!fs.existsSync(tempDir)) {
-            fs.mkdirSync(tempDir, { recursive: true });
-        }
-        await new Promise((resolve, reject) => {
-            fs.createReadStream(tempZipPath)
-                .pipe(unzipper.Extract({ path: tempDir }))
-                .on('close', resolve)
-                .on('error', (err) => {
-                    console.error('Fel vid unzipper:', err);
-                    reject(new Error(`Fel vid extrahering av ZIP-fil: ${err.message}`));
-                });
-        });
-        const extractedFiles = fs.readdirSync(tempDir);
-        for (const filename of extractedFiles) {
-            const filePath = path.join(tempDir, filename);
-            if (fs.statSync(filePath).isFile()) {
-                const finalImagePath = path.join(imagesDir, filename);
-                fs.renameSync(filePath, finalImagePath);
-                await processImageFile(finalImagePath);
-            }
-        }
-        fs.unlinkSync(tempZipPath);
-        fs.rmSync(tempDir, { recursive: true });
-    } catch (err) {
-        throw new Error(`Fel vid hantering av ZIP-fil: ${err.message}`);
+export async function processImageFile(filePath) {
+  const filename = path.basename(filePath);
+  try {
+    const exif = (await exifr.parse(filePath).catch(() => null)) || {};
+    const lat = exif?.latitude ?? null;
+    const lng = exif?.longitude ?? null;
+    const loc = lat != null && lng != null ? await getLocationFromCoords(lat, lng) : { city: null, country: null };
+
+    const meta = {
+      Make: exif?.Make || null,
+      Model: exif?.Model || null,
+      DateTimeOriginal: exif?.DateTimeOriginal ? new Date(exif.DateTimeOriginal).toISOString() : null
+    };
+
+    await db.query(
+      `INSERT INTO files (filename, filepath, filetype, city, country)
+       VALUES (?, ?, 'image', ?, ?)
+       ON DUPLICATE KEY UPDATE filepath=VALUES(filepath), filetype='image', city=VALUES(city), country=VALUES(country)`,
+      [filename, filePath, loc.city, loc.country]
+    );
+
+    const [row] = await db.query(`SELECT id FROM files WHERE filename=?`, [filename]);
+    if (!row) throw new Error("Kunde inte hämta file_id");
+    const fileId = row.id;
+
+    const pairs = Object.entries(meta).filter(([, v]) => v != null);
+    if (pairs.length) {
+      const sql = `INSERT INTO metadata (file_id, metadata_key, metadata_value)
+                   VALUES ${pairs.map(() => "(?, ?, ?)").join(",")}
+                   ON DUPLICATE KEY UPDATE metadata_value=VALUES(metadata_value)`;
+      const params = pairs.flatMap(([k, v]) => [fileId, k, String(v)]);
+      await db.query(sql, params);
     }
+
+    if (lat != null && lng != null) {
+      await db.query(
+        `INSERT INTO geodata (file_id, latitude, longitude)
+         VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE latitude=VALUES(latitude), longitude=VALUES(longitude)`,
+        [fileId, lat, lng]
+      );
+    }
+
+    console.log(`[image] Saved ${filename}`);
+  } catch (err) {
+    console.error(`[image] Error ${filename}:`, err.message);
+  }
 }
