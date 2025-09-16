@@ -31,3 +31,4 @@ async function search() {
   }
   resultsDiv.innerHTML = html;
 }
+
